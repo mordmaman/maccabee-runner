@@ -1,0 +1,1333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#151a3e">
+<title>Maccabee Runner</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0b0d1e;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  body {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  canvas {
+    display: block;
+    image-rendering: crisp-edges;
+    image-rendering: pixelated;
+    touch-action: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="640" height="360"></canvas>
+<script>
+// Built by build.py from src/ — edit the files in src/, not this one.
+(() => {
+'use strict';
+// ---- src/config.js ----
+// Maccabee Runner — every tunable number lives in CONFIG.
+// Units: logical pixels (the screen is 640x360) and seconds.
+// Tip for tuning in a desktop browser: open the console and change MR.CONFIG
+// values while playing; the game reads them every frame.
+
+const CONFIG = {
+  build: 'phase-1',
+
+  view: { w: 640, h: 360 },
+
+  display: {
+    integerScale: true,     // whole-number scaling for a crisp pixel look
+    // On high-density phone screens a whole-number scale can leave the game
+    // small (e.g. with the browser address bar showing). If the integer fit
+    // fills less than this share of the space, use a fractional fit instead;
+    // at 2x+ density the uneven pixels are invisible. Set to 0 to always
+    // use whole numbers.
+    hiDpiMinFill: 0.85,
+  },
+
+  world: {
+    ceiling: 22,            // top of the flying band (y)
+    floor: 316,             // ground line where the Maccabee runs (y)
+    pxPerMetre: 10,         // score: 10 px of scrolling = 1 metre
+  },
+
+  player: {
+    screenX: 128,           // fixed position across the screen
+    w: 18,
+    h: 28,
+    hitInset: 3,            // hitbox is this much smaller on every side (forgiving)
+    gravity: 1550,          // px/s² pulling down when not holding
+    thrust: 3000,           // px/s² pushing up while holding (net lift = thrust - gravity)
+    turnBoost: 1.35,        // extra push when changing direction; makes it feel snappy
+    maxRise: 340,           // px/s
+    maxFall: 560,           // px/s
+    runStride: 24,          // px of ground per leg swap when running
+  },
+
+  speed: {
+    start: 220,             // px/s scroll at the start of a run
+    ramp: 3,                // px/s added every second
+    max: 380,               // cap for this stage
+    titleScroll: 60,        // background drift on the title screen
+  },
+
+  // Difficulty sets hits per run. The picker arrives in Phase 2.
+  difficulty: 'normal',
+  difficulties: {
+    easy:   { hits: 3 },
+    normal: { hits: 2 },
+    hard:   { hits: 1 },
+  },
+  invincibleTime: 1.4,      // seconds of flashing after a hit
+  flashHz: 12,
+
+  spawn: {
+    firstAt: 900,           // px of open ground before the first obstacle
+    lookahead: 240,         // build chunks this far beyond the right edge
+    despawnMargin: 120,     // remove things this far off the left edge
+    gapTime: [0.85, 1.35],  // seconds of open air between chunks (scaled by speed)
+    slalomGapTime: 1.0,     // seconds between the barriers of a slalom
+    introMetres: 150,       // only single barriers before this distance
+    weights: { single: 6, slalom: 2.5, corridor: 1.5 },
+    coinChance: 0.75,       // chance of a gelt shape in each gap
+  },
+
+  barrier: {
+    thickness: 6,           // drawn beam width
+    post: 10,               // drawn post size at each end
+    hitRadius: 4,           // collision half-width of the beam
+    length: [80, 150],      // single barriers
+    floatClear: 40,         // min space above and below a floating upright barrier
+    slalomLength: [140, 175],
+    corridorLength: [150, 220],
+    corridorGap: 120,       // space between the two beams of a corridor
+  },
+
+  gelt: {
+    size: 8,
+    pickupRadius: 14,       // generous on purpose
+    spacing: 18,
+    clearance: 10,          // keep coins this far from beams
+    maxSlope: 0.75,         // steepest coin curve (px up per px across)
+  },
+
+  pools: { barriers: 24, coins: 256 },
+
+  shake: { hit: 5, death: 8, time: 0.3 },
+  deathPop: 260,            // upward bonk on the final hit (px/s)
+  deathTime: 0.9,           // tumble before the results panel
+  restartDelay: 0.3,        // ignore taps this long after the panel appears
+};
+
+// ---- src/input.js ----
+// One button: touch anywhere, mouse, or Space.
+// The game reads `held` (is the button down?) and `pressed` (new presses
+// since the last update). Nothing here is needed by the headless test.
+
+function createInput() {
+  return { held: false, pressed: 0, pointers: new Set(), key: false };
+}
+
+function syncHeld(input) {
+  input.held = input.pointers.size > 0 || input.key;
+}
+
+function releaseInput(input) {
+  input.pointers.clear();
+  input.key = false;
+  syncHeld(input);
+}
+
+function attachInput(input, target) {
+  target.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    input.pointers.add(e.pointerId);
+    input.pressed++;
+    syncHeld(input);
+  }, { passive: false });
+
+  const up = (e) => {
+    input.pointers.delete(e.pointerId);
+    syncHeld(input);
+  };
+  target.addEventListener('pointerup', up);
+  target.addEventListener('pointercancel', up);
+
+  target.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space') return;
+    e.preventDefault();
+    if (!e.repeat && !input.key) input.pressed++;
+    input.key = true;
+    syncHeld(input);
+  });
+  target.addEventListener('keyup', (e) => {
+    if (e.code !== 'Space') return;
+    e.preventDefault();
+    input.key = false;
+    syncHeld(input);
+  });
+
+  // Stop long-press menus, double-tap zoom and page scrolling.
+  target.addEventListener('contextmenu', (e) => e.preventDefault());
+  target.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+  target.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+}
+
+// ---- src/player.js ----
+// The Maccabee: flight physics, run cycle and the placeholder drawing.
+// Position is the centre of the body. x is a fixed screen position;
+// the world scrolls past.
+
+
+function playerGroundY() {
+  return CONFIG.world.floor - CONFIG.player.h / 2;
+}
+
+function playerCeilY() {
+  return CONFIG.world.ceiling + CONFIG.player.h / 2;
+}
+
+function createPlayer() {
+  const p = {
+    x: 0, y: 0, prevY: 0, vy: 0,
+    onGround: true, thrusting: false,
+    hits: 0, inv: 0,
+    runT: 0, spin: 0, prevSpin: 0,
+    dead: false,
+  };
+  resetPlayer(p, 1);
+  return p;
+}
+
+function resetPlayer(p, hits) {
+  p.x = CONFIG.player.screenX;
+  p.y = p.prevY = playerGroundY();
+  p.vy = 0;
+  p.onGround = true;
+  p.thrusting = false;
+  p.hits = hits;
+  p.inv = 0;
+  p.runT = 0;
+  p.spin = p.prevSpin = 0;
+  p.dead = false;
+}
+
+// One fixed step. `held` is the button, `speed` the scroll speed (for legs).
+function stepPlayer(p, held, dt, speed) {
+  const c = CONFIG.player;
+  p.prevY = p.y;
+  p.prevSpin = p.spin;
+
+  const thrust = held && !p.dead;
+  p.thrusting = thrust;
+
+  let acc;
+  if (thrust) acc = -(c.thrust - c.gravity) * (p.vy > 0 ? c.turnBoost : 1);
+  else acc = c.gravity * (p.vy < 0 && !p.dead ? c.turnBoost : 1);
+
+  p.vy += acc * dt;
+  if (p.vy < -c.maxRise && !p.dead) p.vy = -c.maxRise;
+  if (p.vy > c.maxFall) p.vy = c.maxFall;
+  p.y += p.vy * dt;
+
+  const gy = playerGroundY();
+  const cy = playerCeilY();
+  const wasAirborne = !p.onGround;
+  if (p.y >= gy) {
+    p.y = gy;
+    if (p.vy > 0) p.vy = 0;
+    p.onGround = true;
+  } else {
+    p.onGround = false;
+  }
+  if (p.y <= cy) {
+    p.y = cy;
+    if (p.vy < 0) p.vy = 0;
+  }
+
+  if (p.dead) {
+    if (!p.onGround) {
+      p.spin += dt * 10;
+    } else if (wasAirborne) {
+      // Land flat on the back or front, whichever is nearer.
+      const half = Math.PI / 2;
+      p.spin = p.prevSpin = half + Math.round((p.spin - half) / Math.PI) * Math.PI;
+    }
+  } else if (p.onGround) {
+    p.runT += (dt * speed) / c.runStride;
+  }
+
+  if (p.inv > 0) p.inv = Math.max(0, p.inv - dt);
+}
+
+// Placeholder art: rectangles. Real sprites arrive in Phase 2.
+function drawPlayer(ctx, p, alpha, t) {
+  if (p.inv > 0 && !p.dead && Math.floor(p.inv * CONFIG.flashHz * 2) % 2 === 1) return;
+
+  const c = CONFIG.player;
+  const y = Math.round(p.prevY + (p.y - p.prevY) * alpha);
+  const spin = p.prevSpin + (p.spin - p.prevSpin) * alpha;
+  const lying = p.dead && p.onGround;
+
+  ctx.save();
+  ctx.translate(Math.round(p.x), y + (lying ? (c.h - c.w) / 2 : 0));
+  if (spin) ctx.rotate(spin);
+
+  // Jetpack flame
+  if (p.thrusting) {
+    const flick = Math.floor(t * 30) % 3;
+    const len = 7 + flick * 3;
+    ctx.fillStyle = '#ff7a1a';
+    ctx.fillRect(-11, 8, 6, len);
+    ctx.fillStyle = '#ffd23f';
+    ctx.fillRect(-10, 8, 4, len - 4);
+  }
+
+  // Jetpack (an oil tank on the back)
+  ctx.fillStyle = '#c08a3a';
+  ctx.fillRect(-12, -9, 7, 3);
+  ctx.fillStyle = '#8a5a2a';
+  ctx.fillRect(-12, -6, 7, 13);
+  ctx.fillStyle = '#3a2a1a';
+  ctx.fillRect(-11, 7, 5, 2);
+
+  // Legs
+  ctx.fillStyle = '#5a3a22';
+  if (p.onGround && !p.dead) {
+    const step = Math.floor(p.runT) % 2;
+    ctx.fillRect(-5, 8, 4, step ? 6 : 4);
+    ctx.fillRect(1, 8, 4, step ? 4 : 6);
+  } else {
+    ctx.fillRect(-4, 8, 3, 5);
+    ctx.fillRect(1, 8, 3, 6);
+  }
+
+  // Tunic and belt
+  ctx.fillStyle = '#2f6fd6';
+  ctx.fillRect(-6, -6, 13, 14);
+  ctx.fillStyle = '#7a4a22';
+  ctx.fillRect(-6, 2, 13, 2);
+
+  // Arm
+  ctx.fillStyle = '#f0c08a';
+  ctx.fillRect(3, -3, 6, 3);
+
+  // Head, headband, eye
+  ctx.fillRect(-4, -14, 9, 8);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(-4, -12, 9, 2);
+  ctx.fillStyle = '#1b1f3a';
+  ctx.fillRect(2, -9, 2, 2);
+
+  ctx.restore();
+}
+
+// ---- src/entities.js ----
+// Hazards and pickups. Everything is pooled: objects are made once at
+// load and reused, so a run makes no garbage.
+// Phase 1 has spear barriers and gelt. Particles and the rest come in Phase 2.
+
+
+// ---------- pools ----------
+
+function createPool(size, make) {
+  const items = new Array(size);
+  for (let i = 0; i < size; i++) items[i] = make();
+  return { items, misses: 0 };
+}
+
+function takeFromPool(pool) {
+  const items = pool.items;
+  for (let i = 0; i < items.length; i++) {
+    if (!items[i].active) {
+      items[i].active = true;
+      return items[i];
+    }
+  }
+  pool.misses++;
+  return null;
+}
+
+function clearPool(pool) {
+  const items = pool.items;
+  for (let i = 0; i < items.length; i++) items[i].active = false;
+}
+
+function makeBarrier() {
+  return { active: false, x1: 0, y1: 0, x2: 0, y2: 0, minX: 0, maxX: 0 };
+}
+
+function makeCoin() {
+  return { active: false, x: 0, y: 0 };
+}
+
+function createEntities() {
+  return {
+    barriers: createPool(CONFIG.pools.barriers, makeBarrier),
+    coins: createPool(CONFIG.pools.coins, makeCoin),
+  };
+}
+
+function clearEntities(ents) {
+  clearPool(ents.barriers);
+  clearPool(ents.coins);
+}
+
+// Remove anything that has scrolled off the left edge.
+function cullEntities(ents, leftX) {
+  const bs = ents.barriers.items;
+  for (let i = 0; i < bs.length; i++) if (bs[i].active && bs[i].maxX < leftX) bs[i].active = false;
+  const cs = ents.coins.items;
+  for (let i = 0; i < cs.length; i++) if (cs[i].active && cs[i].x < leftX) cs[i].active = false;
+}
+
+// ---------- spawning ----------
+
+// A spear barrier: a beam between two posts. Angle in degrees, 0 = flat.
+function addBarrier(ents, cx, cy, len, angDeg) {
+  const b = takeFromPool(ents.barriers);
+  if (!b) return null;
+  const a = (angDeg * Math.PI) / 180;
+  const hx = (Math.cos(a) * len) / 2;
+  const hy = (Math.sin(a) * len) / 2;
+  const pad = CONFIG.barrier.post / 2;
+  b.x1 = cx - hx;
+  b.y1 = cy - hy;
+  b.x2 = cx + hx;
+  b.y2 = cy + hy;
+  b.minX = Math.min(b.x1, b.x2) - pad;
+  b.maxX = Math.max(b.x1, b.x2) + pad;
+  return b;
+}
+
+// A coin, unless it would sit on or too near a beam.
+function addCoin(ents, x, y) {
+  const W = CONFIG.world;
+  if (y < W.ceiling + 8 || y > W.floor - 8) return null;
+  const clear = CONFIG.barrier.hitRadius + CONFIG.gelt.size / 2 + CONFIG.gelt.clearance;
+  const bs = ents.barriers.items;
+  for (let i = 0; i < bs.length; i++) {
+    const b = bs[i];
+    if (!b.active || x < b.minX - clear || x > b.maxX + clear) continue;
+    if (pointSegDist2(x, y, b.x1, b.y1, b.x2, b.y2) < clear * clear) return null;
+  }
+  const c = takeFromPool(ents.coins);
+  if (!c) return null;
+  c.x = x;
+  c.y = y;
+  return c;
+}
+
+// ---------- collision ----------
+// The player is a capsule: a short vertical segment with a radius.
+// A barrier is also a capsule: its beam with hitRadius.
+
+function clamp01(v) {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+function pointSegDist2(px, py, ax, ay, bx, by) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 > 0 ? clamp01(((px - ax) * dx + (py - ay) * dy) / len2) : 0;
+  const ex = ax + dx * t - px;
+  const ey = ay + dy * t - py;
+  return ex * ex + ey * ey;
+}
+
+// Squared distance between segments p1-q1 and p2-q2 (Ericson, RTCD 5.1.9).
+function segSegDist2(p1x, p1y, q1x, q1y, p2x, p2y, q2x, q2y) {
+  const d1x = q1x - p1x, d1y = q1y - p1y;
+  const d2x = q2x - p2x, d2y = q2y - p2y;
+  const rx = p1x - p2x, ry = p1y - p2y;
+  const a = d1x * d1x + d1y * d1y;
+  const e = d2x * d2x + d2y * d2y;
+  const f = d2x * rx + d2y * ry;
+  const EPS = 1e-9;
+  let s, t;
+  if (a <= EPS && e <= EPS) {
+    s = 0; t = 0;
+  } else if (a <= EPS) {
+    s = 0; t = clamp01(f / e);
+  } else {
+    const c = d1x * rx + d1y * ry;
+    if (e <= EPS) {
+      t = 0; s = clamp01(-c / a);
+    } else {
+      const b = d1x * d2x + d1y * d2y;
+      const denom = a * e - b * b;
+      s = denom !== 0 ? clamp01((b * f - c * e) / denom) : 0;
+      t = (b * s + f) / e;
+      if (t < 0) { t = 0; s = clamp01(-c / a); }
+      else if (t > 1) { t = 1; s = clamp01((b - c) / a); }
+    }
+  }
+  const dx = p1x + d1x * s - (p2x + d2x * t);
+  const dy = p1y + d1y * s - (p2y + d2y * t);
+  return dx * dx + dy * dy;
+}
+
+// px, py: player centre in world coordinates.
+function playerHitsBarrier(b, px, py) {
+  const P = CONFIG.player;
+  const pr = P.w / 2 - P.hitInset;
+  const half = P.h / 2 - P.w / 2;
+  const reach = pr + CONFIG.barrier.hitRadius;
+  if (px + reach < b.minX || px - reach > b.maxX) return false;
+  return segSegDist2(px, py - half, px, py + half, b.x1, b.y1, b.x2, b.y2) < reach * reach;
+}
+
+function playerTouchesCoin(c, px, py) {
+  const r = CONFIG.gelt.pickupRadius;
+  const dx = c.x - px;
+  if (dx > r || dx < -r) return false;
+  const half = CONFIG.player.h / 2 - CONFIG.player.w / 2;
+  const ny = c.y < py - half ? py - half : c.y > py + half ? py + half : c.y;
+  const dy = c.y - ny;
+  return dx * dx + dy * dy < r * r;
+}
+
+// ---------- drawing (placeholder rectangles) ----------
+
+function drawBeam(ctx, x1, y1, x2, y2, size, color) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 2));
+  const h = size >> 1;
+  ctx.fillStyle = color;
+  for (let s = 0; s <= steps; s++) {
+    const k = s / steps;
+    ctx.fillRect(Math.round(x1 + dx * k) - h, Math.round(y1 + dy * k) - h, size, size);
+  }
+}
+
+function drawPost(ctx, x, y) {
+  const s = CONFIG.barrier.post;
+  const h = s >> 1;
+  const rx = Math.round(x) - h;
+  const ry = Math.round(y) - h;
+  ctx.fillStyle = '#2a1c10';
+  ctx.fillRect(rx, ry, s, s);
+  ctx.fillStyle = '#9a7440';
+  ctx.fillRect(rx + 2, ry + 2, s - 4, s - 4);
+}
+
+function drawBarriers(ctx, ents, camX) {
+  const t = CONFIG.barrier.thickness;
+  const vw = CONFIG.view.w;
+  const items = ents.barriers.items;
+  for (let i = 0; i < items.length; i++) {
+    const b = items[i];
+    if (!b.active || b.maxX - camX < -8 || b.minX - camX > vw + 8) continue;
+    const x1 = b.x1 - camX, x2 = b.x2 - camX;
+    drawBeam(ctx, x1, b.y1, x2, b.y2, t + 2, '#6e1a0e');
+    drawBeam(ctx, x1, b.y1, x2, b.y2, t, '#e8452c');
+    drawBeam(ctx, x1, b.y1, x2, b.y2, 2, '#ff9a6a');
+    drawPost(ctx, x1, b.y1);
+    drawPost(ctx, x2, b.y2);
+  }
+}
+
+// w is the visible width (2..8), which fakes a spinning coin.
+function drawCoinAt(ctx, x, y, w) {
+  const hw = w >> 1;
+  const left = x - hw;
+  ctx.fillStyle = '#a8740a';
+  if (w > 4) {
+    ctx.fillRect(left, y - 3, w, 6);
+    ctx.fillRect(left + 1, y - 4, w - 2, 8);
+    ctx.fillStyle = '#ffd23f';
+    ctx.fillRect(left + 1, y - 3, w - 2, 6);
+    ctx.fillStyle = '#fff3b0';
+    ctx.fillRect(left + 2, y - 2, 2, 2);
+  } else {
+    ctx.fillRect(left, y - 4, w, 8);
+    ctx.fillStyle = '#ffd23f';
+    ctx.fillRect(left + (w > 2 ? 1 : 0), y - 3, w > 2 ? w - 2 : w, 6);
+  }
+}
+
+function drawCoins(ctx, ents, camX, t) {
+  const vw = CONFIG.view.w;
+  const items = ents.coins.items;
+  for (let i = 0; i < items.length; i++) {
+    const c = items[i];
+    if (!c.active) continue;
+    const sx = Math.round(c.x - camX);
+    if (sx < -8 || sx > vw + 8) continue;
+    const w = 4 + 2 * Math.round(2 * Math.abs(Math.cos(t * 3 + c.x * 0.02)));
+    drawCoinAt(ctx, sx, Math.round(c.y), w);
+  }
+}
+
+// ---- src/spawner.js ----
+// Builds the course ahead of the player, one chunk at a time.
+// Phase 1: simple generated chunks (single barrier, slalom, corridor) with a
+// gelt shape in the gap after each. Phase 2 swaps this for hand-designed
+// patterns weighted by stage and speed.
+//
+// Fairness rules used here:
+// - the gap between chunks is measured in seconds of flight, so it stays
+//   fair as the speed climbs;
+// - every barrier leaves at least one opening taller than the player;
+// - slalom barriers are spaced by time too.
+
+
+// Small seeded random generator (mulberry32), so runs can be replayed in tests.
+function makeRng(seed) {
+  let s = seed >>> 0;
+  return function rng() {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function randRange(rng, a, b) {
+  return a + (b - a) * rng();
+}
+
+function pickWeighted(rng, weights) {
+  let total = 0;
+  for (const k in weights) total += weights[k];
+  let r = rng() * total;
+  let last = null;
+  for (const k in weights) {
+    last = k;
+    r -= weights[k];
+    if (r < 0) return k;
+  }
+  return last;
+}
+
+function createSpawner() {
+  return { nextX: 0, chunks: 0 };
+}
+
+function resetSpawner(sp, startX) {
+  sp.nextX = startX + CONFIG.spawn.firstAt;
+  sp.chunks = 0;
+}
+
+// Scroll speed expected by the time the player reaches world x.
+function speedAtX(g, x) {
+  const S = CONFIG.speed;
+  const ahead = x - (g.camX + CONFIG.player.screenX);
+  const t = g.runTime + Math.max(0, ahead) / Math.max(1, g.speed);
+  return Math.min(S.max, S.start + S.ramp * t);
+}
+
+function updateSpawner(g) {
+  const sp = g.spawner;
+  const edge = g.camX + CONFIG.view.w + CONFIG.spawn.lookahead;
+  while (sp.nextX < edge) sp.nextX = buildChunk(g, sp.nextX);
+}
+
+// Builds one chunk starting at world x and returns where the next one starts.
+function buildChunk(g, x) {
+  const S = CONFIG.spawn;
+  const rng = g.rng;
+  const speed = speedAtX(g, x);
+  const metres = (x - g.runStartX) / CONFIG.world.pxPerMetre;
+  const kind = metres < S.introMetres ? 'single' : pickWeighted(rng, S.weights);
+
+  let end;
+  if (kind === 'slalom') end = chunkSlalom(g, x, speed);
+  else if (kind === 'corridor') end = chunkCorridor(g, x);
+  else end = chunkSingle(g, x);
+
+  const gap = speed * randRange(rng, S.gapTime[0], S.gapTime[1]);
+  if (rng() < S.coinChance) placeGelt(g, end + 30, gap - 60);
+  g.spawner.chunks++;
+  return end + gap;
+}
+
+// One barrier: hanging, standing, floating upright, flat or diagonal.
+function chunkSingle(g, x) {
+  const B = CONFIG.barrier;
+  const W = CONFIG.world;
+  const rng = g.rng;
+  const len = randRange(rng, B.length[0], B.length[1]);
+  const type = Math.floor(rng() * 6);
+  let ang;
+  let cy;
+  if (type === 0) {
+    ang = 90; cy = W.ceiling + len / 2; // hangs from the top
+  } else if (type === 1) {
+    ang = 90; cy = W.floor - len / 2; // stands on the ground
+  } else if (type === 2) {
+    ang = 90; // floats, with room above and below
+    cy = randRange(rng, W.ceiling + len / 2 + B.floatClear, W.floor - len / 2 - B.floatClear);
+  } else if (type === 3) {
+    ang = 0; cy = randRange(rng, W.ceiling + 20, W.floor - 20);
+  } else {
+    ang = type === 4 ? 45 : 135;
+    const ext = (len * Math.SQRT1_2) / 2;
+    cy = randRange(rng, W.ceiling + ext + 12, W.floor - ext - 12);
+  }
+  const halfW = Math.abs(Math.cos((ang * Math.PI) / 180)) * len / 2 + B.post / 2;
+  addBarrier(g.ents, x + halfW, cy, len, ang);
+  return x + halfW * 2;
+}
+
+// Two or three uprights, alternating top and bottom: weave up and down.
+function chunkSlalom(g, x, speed) {
+  const B = CONFIG.barrier;
+  const W = CONFIG.world;
+  const rng = g.rng;
+  const count = rng() < 0.4 ? 3 : 2;
+  const spacing = speed * CONFIG.spawn.slalomGapTime;
+  let fromTop = rng() < 0.5;
+  let cx = x + B.post / 2;
+  for (let i = 0; i < count; i++) {
+    const len = randRange(rng, B.slalomLength[0], B.slalomLength[1]);
+    const cy = fromTop ? W.ceiling + len / 2 : W.floor - len / 2;
+    addBarrier(g.ents, cx, cy, len, 90);
+    if (i < count - 1) cx += spacing;
+    fromTop = !fromTop;
+  }
+  return cx + B.post / 2;
+}
+
+// Two flat beams with a gap between them, and a line of gelt down the middle.
+function chunkCorridor(g, x) {
+  const B = CONFIG.barrier;
+  const W = CONFIG.world;
+  const rng = g.rng;
+  const len = randRange(rng, B.corridorLength[0], B.corridorLength[1]);
+  const half = B.corridorGap / 2;
+  const mid = randRange(rng, W.ceiling + half + 30, W.floor - half - 30);
+  const cx = x + len / 2 + B.post / 2;
+  addBarrier(g.ents, cx, mid - half, len, 0);
+  addBarrier(g.ents, cx, mid + half, len, 0);
+  const sp = CONFIG.gelt.spacing;
+  for (let gx = x + 24; gx <= x + len - 16; gx += sp) addCoin(g.ents, gx, mid);
+  return x + len + B.post;
+}
+
+// A shape of gelt filling (part of) the gap from x0, `width` px wide.
+function placeGelt(g, x0, width) {
+  const G = CONFIG.gelt;
+  const W = CONFIG.world;
+  const rng = g.rng;
+  const sp = G.spacing;
+  const maxCols = Math.min(12, Math.floor(width / sp) + 1);
+  if (maxCols < 3) return;
+  const top = W.ceiling + 14;
+  const bot = W.floor - 10;
+  const n = 3 + Math.floor(rng() * (maxCols - 2));
+  const span = (n - 1) * sp;
+  const xs = x0 + (width - span) / 2;
+  const shape = Math.floor(rng() * 5);
+  // Keep curves no steeper than the Maccabee can follow at top speed.
+  const slope = G.maxSlope;
+
+  if (shape === 0) {
+    // straight line
+    const y = randRange(rng, top, bot);
+    for (let i = 0; i < n; i++) addCoin(g.ents, xs + i * sp, y);
+  } else if (shape === 1) {
+    // arc, up or down
+    const amp = Math.min(randRange(rng, 30, 70), (slope * span) / Math.PI) * (rng() < 0.5 ? 1 : -1);
+    const base = amp > 0 ? randRange(rng, top + amp, bot) : randRange(rng, top, bot + amp);
+    for (let i = 0; i < n; i++) addCoin(g.ents, xs + i * sp, base - amp * Math.sin((Math.PI * i) / (n - 1)));
+  } else if (shape === 2) {
+    // wave
+    const amp = Math.min(randRange(rng, 20, 40), (slope * span) / (2 * Math.PI));
+    const mid = randRange(rng, top + amp, bot - amp);
+    for (let i = 0; i < n; i++) addCoin(g.ents, xs + i * sp, mid + amp * Math.sin((2 * Math.PI * i) / (n - 1)));
+  } else if (shape === 3) {
+    // block
+    const rows = 2 + Math.floor(rng() * 2);
+    const cols = Math.min(n, 6);
+    const bx = x0 + (width - (cols - 1) * sp) / 2;
+    const y0 = randRange(rng, top, bot - (rows - 1) * sp);
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) addCoin(g.ents, bx + c * sp, y0 + r * sp);
+    }
+  } else {
+    // diagonal
+    const dy = randRange(rng, 0.4, 1) * slope * sp * (rng() < 0.5 ? 1 : -1);
+    const ext = dy * (n - 1);
+    const y0 = dy > 0 ? randRange(rng, top, bot - ext) : randRange(rng, top - ext, bot);
+    for (let i = 0; i < n; i++) addCoin(g.ents, xs + i * sp, y0 + i * dy);
+  }
+}
+
+// ---- src/stages.js ----
+// Settings and their scrolling backgrounds.
+// Phase 1 has one placeholder setting. Phase 3 adds the eight nights,
+// each with its own palette and three-layer parallax.
+
+
+const PLACEHOLDER_STAGE = {
+  name: 'Placeholder hills',
+  sky: ['#151a3e', '#1d2350', '#2b2f69', '#463f80', '#6c4f8e', '#9a5f8c'],
+  star: '#f4ecc2',
+  far: '#2a2c58',
+  mid: '#2f3f34',
+  midLight: '#3f5444',
+  trunk: '#2a2018',
+  ground: '#c9a46a',
+  groundTop: '#e0bf84',
+  groundDark: '#a8844e',
+  sign: '#7a5a32',
+};
+
+// Fixed scenery tables, made once at load from a tiny seeded generator.
+let scenerySeed = 1234567;
+function sceneryRand() {
+  scenerySeed = (scenerySeed * 1103515245 + 12345) & 0x7fffffff;
+  return scenerySeed / 0x7fffffff;
+}
+
+const STAR_SPAN = 1280;
+const STAR_COUNT = 56;
+const STARS = new Int16Array(STAR_COUNT * 3);
+for (let i = 0; i < STAR_COUNT; i++) {
+  STARS[i * 3] = Math.floor(sceneryRand() * STAR_SPAN);
+  STARS[i * 3 + 1] = Math.floor(sceneryRand() * 170);
+  STARS[i * 3 + 2] = sceneryRand() < 0.2 ? 2 : 1;
+}
+
+const HILL_W = 16;
+const HILL_N = 64;
+const HILLS = new Int16Array(HILL_N);
+for (let i = 0; i < HILL_N; i++) {
+  const a = (i / HILL_N) * Math.PI * 2;
+  HILLS[i] = Math.round(62 + 26 * Math.sin(a * 3) + 14 * Math.sin(a * 7 + 1.3));
+}
+
+const TREE_GAP = 96;
+const TREE_N = 20;
+const TREES = new Int16Array(TREE_N * 3); // x jitter, canopy width, height
+for (let i = 0; i < TREE_N; i++) {
+  TREES[i * 3] = Math.floor(sceneryRand() * 50);
+  TREES[i * 3 + 1] = 18 + Math.floor(sceneryRand() * 14);
+  TREES[i * 3 + 2] = 16 + Math.floor(sceneryRand() * 14);
+}
+
+function wrap(v, m) {
+  return ((v % m) + m) % m;
+}
+
+// camX is the rounded camera position. Draws a little past each edge so
+// screen shake never shows a gap.
+function drawBackground(ctx, st, camX) {
+  const W = CONFIG.world;
+  const vw = CONFIG.view.w;
+  const vh = CONFIG.view.h;
+
+  // Sky bands
+  const n = st.sky.length;
+  const bh = Math.ceil((W.floor + 8) / n);
+  for (let i = 0; i < n; i++) {
+    ctx.fillStyle = st.sky[i];
+    ctx.fillRect(-8, -8 + i * bh, vw + 16, bh);
+  }
+
+  // Stars (barely move)
+  ctx.fillStyle = st.star;
+  const so = Math.floor(camX * 0.03);
+  for (let i = 0; i < STAR_COUNT; i++) {
+    const sx = wrap(STARS[i * 3] - so, STAR_SPAN);
+    if (sx > vw + 8) continue;
+    const s = STARS[i * 3 + 2];
+    ctx.fillRect(sx, STARS[i * 3 + 1], s, s);
+  }
+
+  // Far hills (slow)
+  ctx.fillStyle = st.far;
+  const fo = Math.floor(camX * 0.15);
+  const first = Math.floor(fo / HILL_W) - 1;
+  for (let i = first; ; i++) {
+    const sx = i * HILL_W - fo;
+    if (sx > vw + 8) break;
+    const h = HILLS[wrap(i, HILL_N)];
+    ctx.fillRect(sx, W.floor - h, HILL_W, h);
+  }
+
+  // Mid layer: a ridge with olive trees (medium)
+  const mo = Math.floor(camX * 0.45);
+  ctx.fillStyle = st.mid;
+  ctx.fillRect(-8, W.floor - 14, vw + 16, 14);
+  const firstTree = Math.floor((mo - 60) / TREE_GAP);
+  for (let i = firstTree; ; i++) {
+    const k = wrap(i, TREE_N) * 3;
+    const sx = i * TREE_GAP + TREES[k] - mo;
+    if (sx > vw + 40) break;
+    const cw = TREES[k + 1];
+    const th = TREES[k + 2];
+    ctx.fillStyle = st.trunk;
+    ctx.fillRect(sx + (cw >> 1) - 2, W.floor - 14 - th, 4, th);
+    ctx.fillStyle = st.mid;
+    ctx.fillRect(sx, W.floor - 14 - th - 12, cw, 14);
+    ctx.fillStyle = st.midLight;
+    ctx.fillRect(sx + 2, W.floor - 14 - th - 12, cw - 6, 4);
+  }
+
+  // Ground (full speed) with two rows of dashes so speed is easy to feel
+  ctx.fillStyle = st.ground;
+  ctx.fillRect(-8, W.floor, vw + 16, vh - W.floor + 8);
+  ctx.fillStyle = st.groundTop;
+  ctx.fillRect(-8, W.floor, vw + 16, 3);
+  ctx.fillStyle = st.groundDark;
+  for (let x = -wrap(camX, 40) - 8; x < vw + 8; x += 40) ctx.fillRect(x, W.floor + 10, 12, 3);
+  for (let x = -wrap(camX + 17, 28) - 8; x < vw + 8; x += 28) ctx.fillRect(x, W.floor + 26, 6, 2);
+}
+
+// Distance signs every 100 m, and a flag at the best distance so far.
+const MARKER_LABELS = [];
+function markerLabel(k) {
+  while (MARKER_LABELS.length <= k) MARKER_LABELS.push(MARKER_LABELS.length * 100 + 'm');
+  return MARKER_LABELS[k];
+}
+
+function drawMarkers(ctx, g, camX) {
+  const W = CONFIG.world;
+  const vw = CONFIG.view.w;
+  const step = 100 * W.pxPerMetre;
+  const st = g.stage;
+  // Signs line up with the player, so passing "100m" happens as the HUD reads 100m.
+  const origin = g.runStartX + CONFIG.player.screenX;
+
+  ctx.font = 'bold 9px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  let k = Math.max(1, Math.ceil((camX - 30 - origin) / step));
+  for (; ; k++) {
+    const sx = Math.round(origin + k * step - camX);
+    if (sx > vw + 30) break;
+    ctx.fillStyle = st.sign;
+    ctx.fillRect(sx - 1, W.floor - 24, 3, 24);
+    ctx.fillRect(sx - 17, W.floor - 38, 35, 15);
+    ctx.fillStyle = '#f4e2b8';
+    ctx.fillRect(sx - 15, W.floor - 36, 31, 11);
+    ctx.fillStyle = '#3a2a1a';
+    ctx.fillText(markerLabel(k), sx + 1, W.floor - 30);
+  }
+
+  if (g.best > 0) {
+    const sx = Math.round(origin + g.best * W.pxPerMetre - camX);
+    if (sx > -40 && sx < vw + 40) {
+      ctx.fillStyle = '#f4ecc2';
+      ctx.fillRect(sx, W.floor - 64, 2, 64);
+      ctx.fillStyle = '#ffd23f';
+      ctx.fillRect(sx + 2, W.floor - 64, 30, 14);
+      ctx.fillStyle = '#3a2a1a';
+      ctx.fillText('BEST', sx + 17, W.floor - 57);
+    }
+  }
+}
+
+// ---- src/ui.js ----
+// Screens and HUD. Phase 1: title, distance HUD, results, pause.
+// The menu chanukiah, shop and full results screen come in later phases.
+
+
+const FONT_CACHE = {};
+function fontFor(size) {
+  return FONT_CACHE[size] || (FONT_CACHE[size] = 'bold ' + size + 'px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif');
+}
+
+function drawLabel(ctx, str, x, y, size, align, color) {
+  ctx.font = fontFor(size);
+  ctx.textAlign = align;
+  ctx.textBaseline = 'top';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = size >= 20 ? 4 : 3;
+  ctx.strokeStyle = '#141428';
+  ctx.strokeText(str, x, y);
+  ctx.fillStyle = color;
+  ctx.fillText(str, x, y);
+}
+
+// 7x6 pixel heart drawn at 2x.
+function drawHeart(ctx, x, y, full) {
+  ctx.fillStyle = '#141428';
+  ctx.fillRect(x - 2, y, 18, 10);
+  ctx.fillRect(x, y - 2, 14, 12);
+  ctx.fillRect(x + 2, y + 10, 10, 2);
+  ctx.fillRect(x + 4, y + 12, 6, 2);
+  ctx.fillStyle = full ? '#ff4a5a' : '#4a2a3a';
+  ctx.fillRect(x + 2, y, 4, 2);
+  ctx.fillRect(x + 8, y, 4, 2);
+  ctx.fillRect(x, y + 2, 14, 4);
+  ctx.fillRect(x + 2, y + 6, 10, 2);
+  ctx.fillRect(x + 4, y + 8, 6, 2);
+  ctx.fillRect(x + 6, y + 10, 2, 2);
+  if (full) {
+    ctx.fillStyle = '#ffb0b8';
+    ctx.fillRect(x + 2, y + 2, 2, 2);
+  }
+}
+
+// Cached HUD strings so drawing makes no new strings when nothing changed.
+const hud = { metres: -1, metresText: '', gelt: -1, geltText: '', best: -1, bestText: '' };
+
+function refreshHud(g) {
+  const m = Math.floor(g.metres);
+  if (m !== hud.metres) { hud.metres = m; hud.metresText = m + 'm'; }
+  if (g.gelt !== hud.gelt) { hud.gelt = g.gelt; hud.geltText = String(g.gelt); }
+  const b = Math.floor(g.best);
+  if (b !== hud.best) { hud.best = b; hud.bestText = 'BEST ' + b + 'm'; }
+}
+
+function drawHUD(ctx, g) {
+  refreshHud(g);
+  drawLabel(ctx, hud.metresText, 12, 8, 24, 'left', '#ffffff');
+  if (hud.best > 0) drawLabel(ctx, hud.bestText, 13, 36, 11, 'left', '#f4ecc2');
+
+  const maxHits = (CONFIG.difficulties[CONFIG.difficulty] || CONFIG.difficulties.normal).hits;
+  for (let i = 0; i < maxHits; i++) drawHeart(ctx, 14 + i * 22, 56, i < g.player.hits);
+
+  drawLabel(ctx, hud.geltText, CONFIG.view.w - 12, 10, 20, 'right', '#ffd23f');
+  ctx.font = fontFor(20);
+  const tw = ctx.measureText(hud.geltText).width;
+  drawCoinAt(ctx, Math.round(CONFIG.view.w - 24 - tw), 21, 8);
+}
+
+function dim(ctx, a) {
+  ctx.fillStyle = a;
+  ctx.fillRect(0, 0, CONFIG.view.w, CONFIG.view.h);
+}
+
+function drawTitle(ctx, g) {
+  const cx = CONFIG.view.w / 2;
+  dim(ctx, 'rgba(10, 12, 30, 0.35)');
+  drawLabel(ctx, 'MACCABEE RUNNER', cx, 62, 40, 'center', '#ffd23f');
+  drawLabel(ctx, 'Hold to fly, let go to fall', cx, 128, 18, 'center', '#ffffff');
+  drawLabel(ctx, 'Dodge the spears and grab the gelt', cx, 154, 15, 'center', '#f4ecc2');
+  if (Math.floor(g.t * 2) % 2 === 0) {
+    drawLabel(ctx, 'Tap, click or press Space to start', cx, 208, 16, 'center', '#ffffff');
+  }
+  drawLabel(ctx, 'Phase 1 prototype', CONFIG.view.w - 8, CONFIG.view.h - 18, 10, 'right', '#c8c0e0');
+}
+
+const results = { run: -1, distance: '', gelt: '', best: '' };
+
+function drawGameOver(ctx, g) {
+  if (results.run !== g.runs) {
+    results.run = g.runs;
+    results.distance = 'Distance  ' + Math.floor(g.metres) + 'm';
+    results.gelt = 'Gelt  ' + g.gelt;
+    results.best = g.newBest ? 'New best!' : 'Best  ' + Math.floor(g.best) + 'm';
+  }
+  const cx = CONFIG.view.w / 2;
+  const w = 300;
+  const h = 184;
+  const x = Math.round(cx - w / 2);
+  const y = 84;
+  ctx.fillStyle = '#ffd23f';
+  ctx.fillRect(x - 3, y - 3, w + 6, h + 6);
+  ctx.fillStyle = '#1d2350';
+  ctx.fillRect(x, y, w, h);
+
+  drawLabel(ctx, 'BONK!', cx, y + 12, 34, 'center', '#ffd23f');
+  drawLabel(ctx, results.distance, cx, y + 62, 18, 'center', '#ffffff');
+  drawLabel(ctx, results.gelt, cx, y + 88, 18, 'center', '#ffffff');
+  drawLabel(ctx, results.best, cx, y + 114, 18, 'center', g.newBest ? '#ffd23f' : '#c8c0e0');
+  if (g.sceneT >= CONFIG.restartDelay && Math.floor(g.t * 2) % 2 === 0) {
+    drawLabel(ctx, 'Tap to fly again', cx, y + 150, 16, 'center', '#ffffff');
+  }
+}
+
+function drawPaused(ctx) {
+  const cx = CONFIG.view.w / 2;
+  dim(ctx, 'rgba(10, 12, 30, 0.6)');
+  drawLabel(ctx, 'Paused', cx, 130, 32, 'center', '#ffd23f');
+  drawLabel(ctx, 'Tap to carry on', cx, 182, 16, 'center', '#ffffff');
+}
+
+// Draws one frame. alpha (0..1) blends between the last two updates.
+function drawGame(ctx, g, alpha) {
+  const camX = Math.round(g.prevCamX + (g.camX - g.prevCamX) * alpha);
+
+  let ox = 0;
+  let oy = 0;
+  if (g.shakeT > 0) {
+    const k = g.shakeMag * (g.shakeT / CONFIG.shake.time);
+    ox = Math.round(Math.sin(g.t * 91) * k);
+    oy = Math.round(Math.cos(g.t * 77) * k);
+  }
+
+  ctx.setTransform(1, 0, 0, 1, ox, oy);
+  drawBackground(ctx, g.stage, camX);
+  if (g.scene !== 'title') drawMarkers(ctx, g, camX);
+  drawCoins(ctx, g.ents, camX, g.t);
+  drawBarriers(ctx, g.ents, camX);
+  drawPlayer(ctx, g.player, alpha, g.t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  if (g.scene === 'title') {
+    drawTitle(ctx, g);
+  } else {
+    drawHUD(ctx, g);
+    if (g.scene === 'over') drawGameOver(ctx, g);
+  }
+  if (g.paused) drawPaused(ctx);
+}
+
+// ---- src/main.js ----
+// Boot, fixed-step loop and scene switching.
+// Everything above boot() is plain logic with no DOM, so tests/sim.js can
+// import it and play the game in Node.
+
+
+const STEP = 1 / 60;
+
+function hitsForDifficulty() {
+  return (CONFIG.difficulties[CONFIG.difficulty] || CONFIG.difficulties.normal).hits;
+}
+
+function createGame(seed) {
+  return {
+    scene: 'title', // title | play | dying | over
+    sceneT: 0,
+    t: 0,
+    paused: false,
+    rng: makeRng(seed),
+    stage: PLACEHOLDER_STAGE,
+    player: createPlayer(),
+    ents: createEntities(),
+    spawner: createSpawner(),
+    camX: 0,
+    prevCamX: 0,
+    runStartX: 0,
+    speed: 0,
+    deathSpeed: 0,
+    runTime: 0,
+    runs: 0,
+    metres: 0,
+    gelt: 0,
+    best: 0, // this session only; saving arrives in Phase 3
+    newBest: false,
+    hitsTaken: 0,
+    shakeT: 0,
+    shakeMag: 0,
+  };
+}
+
+function setScene(g, scene) {
+  g.scene = scene;
+  g.sceneT = 0;
+}
+
+function startShake(g, mag) {
+  g.shakeMag = mag;
+  g.shakeT = CONFIG.shake.time;
+}
+
+function startRun(g) {
+  clearEntities(g.ents);
+  g.runStartX = g.camX;
+  resetSpawner(g.spawner, g.camX);
+  resetPlayer(g.player, hitsForDifficulty());
+  g.speed = CONFIG.speed.start;
+  g.runTime = 0;
+  g.runs++;
+  g.metres = 0;
+  g.gelt = 0;
+  g.newBest = false;
+  g.hitsTaken = 0;
+  g.shakeT = 0;
+  setScene(g, 'play');
+}
+
+function hitPlayer(g) {
+  const p = g.player;
+  p.hits--;
+  g.hitsTaken++;
+  if (p.hits <= 0) {
+    killPlayer(g);
+    return;
+  }
+  p.inv = CONFIG.invincibleTime;
+  startShake(g, CONFIG.shake.hit);
+}
+
+function killPlayer(g) {
+  const p = g.player;
+  p.dead = true;
+  p.inv = 0;
+  p.vy = -CONFIG.deathPop;
+  startShake(g, CONFIG.shake.death);
+  if (g.metres > g.best) {
+    g.best = g.metres;
+    g.newBest = true;
+  }
+  g.deathSpeed = g.speed;
+  setScene(g, 'dying');
+}
+
+function stepPlay(g, held, dt) {
+  const S = CONFIG.speed;
+  g.runTime += dt;
+  g.speed = Math.min(S.max, S.start + S.ramp * g.runTime);
+  g.camX += g.speed * dt;
+  g.metres = (g.camX - g.runStartX) / CONFIG.world.pxPerMetre;
+
+  const p = g.player;
+  stepPlayer(p, held, dt, g.speed);
+  updateSpawner(g);
+  cullEntities(g.ents, g.camX - CONFIG.spawn.despawnMargin);
+
+  const px = g.camX + p.x;
+  const py = p.y;
+
+  const coins = g.ents.coins.items;
+  for (let i = 0; i < coins.length; i++) {
+    const c = coins[i];
+    if (c.active && playerTouchesCoin(c, px, py)) {
+      c.active = false;
+      g.gelt++;
+    }
+  }
+
+  if (p.inv <= 0) {
+    const bs = g.ents.barriers.items;
+    for (let i = 0; i < bs.length; i++) {
+      if (bs[i].active && playerHitsBarrier(bs[i], px, py)) {
+        hitPlayer(g);
+        break;
+      }
+    }
+  }
+}
+
+function stepDying(g, dt) {
+  g.speed = g.deathSpeed * Math.max(0, 1 - g.sceneT / CONFIG.deathTime);
+  g.camX += g.speed * dt;
+  stepPlayer(g.player, false, dt, 0);
+  if (g.sceneT >= CONFIG.deathTime) setScene(g, 'over');
+}
+
+// One fixed update. input = { held, pressed }; pressed is consumed here.
+function stepGame(g, input, dt = STEP) {
+  const pressed = input.pressed > 0;
+  input.pressed = 0;
+  g.prevCamX = g.camX;
+
+  if (g.paused) {
+    g.player.prevY = g.player.y;
+    g.player.prevSpin = g.player.spin;
+    if (pressed) g.paused = false;
+    return;
+  }
+
+  g.t += dt;
+  g.sceneT += dt;
+  if (g.shakeT > 0) g.shakeT = Math.max(0, g.shakeT - dt);
+
+  if (g.scene === 'title') {
+    g.camX += CONFIG.speed.titleScroll * dt;
+    stepPlayer(g.player, false, dt, CONFIG.speed.titleScroll);
+    if (pressed) startRun(g);
+  } else if (g.scene === 'play') {
+    stepPlay(g, input.held, dt);
+  } else if (g.scene === 'dying') {
+    stepDying(g, dt);
+  } else if (g.scene === 'over') {
+    stepPlayer(g.player, false, dt, 0);
+    if (pressed && g.sceneT >= CONFIG.restartDelay) startRun(g);
+  }
+}
+
+function pauseGame(g) {
+  if (g.scene === 'play') g.paused = true;
+}
+
+// ---------- browser only below ----------
+
+function fitCanvas(canvas) {
+  const W = CONFIG.view.w;
+  const H = CONFIG.view.h;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const dpr = window.devicePixelRatio || 1;
+  const fit = Math.min(vw / W, vh / H);
+  const devScale = Math.floor(Math.min((vw * dpr) / W, (vh * dpr) / H));
+  let scale = fit;
+  if (CONFIG.display.integerScale && devScale >= 1) {
+    const whole = devScale / dpr;
+    const lowFill = whole / fit < CONFIG.display.hiDpiMinFill;
+    if (!(dpr >= 2 && lowFill)) scale = whole;
+  }
+  canvas.style.width = W * scale + 'px';
+  canvas.style.height = H * scale + 'px';
+}
+
+function boot() {
+  const canvas = document.getElementById('game');
+  canvas.width = CONFIG.view.w;
+  canvas.height = CONFIG.view.h;
+  const ctx = canvas.getContext('2d', { alpha: false });
+
+  const refit = () => fitCanvas(canvas);
+  refit();
+  window.addEventListener('resize', refit);
+  window.addEventListener('orientationchange', refit);
+
+  const input = createInput();
+  attachInput(input, window);
+
+  const g = createGame((Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0);
+
+  const pause = () => {
+    pauseGame(g);
+    releaseInput(input);
+  };
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) pause();
+  });
+  window.addEventListener('blur', pause);
+
+  let last = 0;
+  let acc = 0;
+  function frame(now) {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (dt > 0.25) dt = 0.25;
+    if (dt < 0) dt = 0;
+    acc += dt;
+    while (acc >= STEP) {
+      stepGame(g, input, STEP);
+      acc -= STEP;
+    }
+    ctx.imageSmoothingEnabled = false;
+    drawGame(ctx, g, acc / STEP);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame((now) => {
+    last = now;
+    requestAnimationFrame(frame);
+  });
+
+  // Handy for tuning from a desktop console: MR.CONFIG.player.thrust = 3200
+  window.MR = { CONFIG, game: g };
+}
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined') boot();
+
+})();
+</script>
+</body>
+</html>
