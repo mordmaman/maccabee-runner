@@ -83,26 +83,31 @@ function buildChunk(g, x) {
   return end + gap;
 }
 
-// One barrier: hanging, standing, floating upright, flat or diagonal.
+// One barrier: hanging, standing, floating upright, flat, a low hurdle to
+// hop over, or diagonal. Standing barriers and hurdles stop the ground from
+// being a lane you can idle along.
 function chunkSingle(g, x) {
   const B = CONFIG.barrier;
   const W = CONFIG.world;
   const rng = g.rng;
-  const len = randRange(rng, B.length[0], B.length[1]);
-  const type = Math.floor(rng() * 6);
+  let len = randRange(rng, B.length[0], B.length[1]);
+  const type = pickWeighted(rng, CONFIG.spawn.singleWeights);
   let ang;
   let cy;
-  if (type === 0) {
-    ang = 90; cy = W.ceiling + len / 2; // hangs from the top
-  } else if (type === 1) {
-    ang = 90; cy = W.floor - len / 2; // stands on the ground
-  } else if (type === 2) {
-    ang = 90; // floats, with room above and below
+  if (type === 'hang') {
+    ang = 90; cy = W.ceiling + len / 2;
+  } else if (type === 'stand') {
+    ang = 90; cy = W.floor - len / 2;
+  } else if (type === 'float') {
+    ang = 90; // with room above and below
     cy = randRange(rng, W.ceiling + len / 2 + B.floatClear, W.floor - len / 2 - B.floatClear);
-  } else if (type === 3) {
-    ang = 0; cy = randRange(rng, W.ceiling + 20, W.floor - 20);
+  } else if (type === 'flat') {
+    ang = 0; cy = randRange(rng, W.ceiling + 20, W.floor - 40);
+  } else if (type === 'hurdle') {
+    ang = 0; cy = W.floor - B.hurdleHeight;
+    len = randRange(rng, B.hurdleLength[0], B.hurdleLength[1]);
   } else {
-    ang = type === 4 ? 45 : 135;
+    ang = rng() < 0.5 ? 45 : 135;
     const ext = (len * Math.SQRT1_2) / 2;
     cy = randRange(rng, W.ceiling + ext + 12, W.floor - ext - 12);
   }

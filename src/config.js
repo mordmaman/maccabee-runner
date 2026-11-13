@@ -28,7 +28,7 @@ export const CONFIG = {
     screenX: 128,           // fixed position across the screen
     w: 18,
     h: 28,
-    hitInset: 3,            // hitbox is this much smaller on every side (forgiving)
+    hitInset: 4,            // hitbox is this much smaller on every side (forgiving)
     gravity: 1550,          // px/s² pulling down when not holding
     thrust: 3000,           // px/s² pushing up while holding (net lift = thrust - gravity)
     turnBoost: 1.35,        // extra push when changing direction; makes it feel snappy
@@ -38,30 +38,31 @@ export const CONFIG = {
   },
 
   speed: {
-    start: 220,             // px/s scroll at the start of a run
-    ramp: 3,                // px/s added every second
-    max: 380,               // cap for this stage
+    start: 190,             // px/s scroll at the start of a run
+    ramp: 2,                // px/s added every second
+    max: 320,               // cap for this stage (later nights go faster)
     titleScroll: 60,        // background drift on the title screen
   },
 
   // Difficulty sets hits per run. The picker arrives in Phase 2.
-  difficulty: 'normal',
+  difficulty: 'easy',
   difficulties: {
     easy:   { hits: 3 },
     normal: { hits: 2 },
     hard:   { hits: 1 },
   },
-  invincibleTime: 1.4,      // seconds of flashing after a hit
+  invincibleTime: 2.0,      // seconds of flashing after a hit
   flashHz: 12,
 
   spawn: {
-    firstAt: 900,           // px of open ground before the first obstacle
+    firstAt: 1100,          // px of open ground before the first obstacle
     lookahead: 240,         // build chunks this far beyond the right edge
     despawnMargin: 120,     // remove things this far off the left edge
-    gapTime: [0.85, 1.35],  // seconds of open air between chunks (scaled by speed)
-    slalomGapTime: 1.0,     // seconds between the barriers of a slalom
-    introMetres: 150,       // only single barriers before this distance
-    weights: { single: 6, slalom: 2.5, corridor: 1.5 },
+    gapTime: [1.15, 1.75],  // seconds of open air between chunks (scaled by speed)
+    slalomGapTime: 1.25,    // seconds between the barriers of a slalom
+    introMetres: 300,       // only single barriers before this distance
+    weights: { single: 7, slalom: 2, corridor: 1.5 },
+    singleWeights: { hang: 1, stand: 1.6, float: 1, flat: 1, hurdle: 1.6, diagonal: 1.4 },
     coinChance: 0.75,       // chance of a gelt shape in each gap
   },
 
@@ -69,11 +70,13 @@ export const CONFIG = {
     thickness: 6,           // drawn beam width
     post: 10,               // drawn post size at each end
     hitRadius: 4,           // collision half-width of the beam
-    length: [80, 150],      // single barriers
-    floatClear: 40,         // min space above and below a floating upright barrier
-    slalomLength: [140, 175],
-    corridorLength: [150, 220],
-    corridorGap: 120,       // space between the two beams of a corridor
+    length: [70, 130],      // single barriers
+    floatClear: 55,         // min space above and below a floating upright barrier
+    hurdleHeight: 12,       // low beam just above the ground: a short hop clears it
+    hurdleLength: [60, 110],
+    slalomLength: [120, 155],
+    corridorLength: [140, 200],
+    corridorGap: 130,       // space between the two beams of a corridor
   },
 
   gelt: {

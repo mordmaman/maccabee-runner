@@ -6,12 +6,23 @@ import { CONFIG } from './config.js';
 
 export const PLACEHOLDER_STAGE = {
   name: 'Placeholder hills',
+  candles: 8, // lit in the scenery chanukiot; in story mode this becomes the night number
   sky: ['#151a3e', '#1d2350', '#2b2f69', '#463f80', '#6c4f8e', '#9a5f8c'],
   star: '#f4ecc2',
   far: '#2a2c58',
+  farMetal: '#9c7a34',
   mid: '#2f3f34',
   midLight: '#3f5444',
   trunk: '#2a2018',
+  wall: '#3d3554',
+  wallTop: '#51496e',
+  door: '#241e34',
+  window: '#2a1f30',
+  windowGlow: 'rgba(255, 190, 90, 0.18)',
+  metal: '#d9a83a',
+  candle: '#eef0ff',
+  bunting: ['#3a7bd5', '#f2f2f2'],
+  string: '#1e1a2c',
   ground: '#c9a46a',
   groundTop: '#e0bf84',
   groundDark: '#a8844e',
@@ -42,22 +53,104 @@ for (let i = 0; i < HILL_N; i++) {
   HILLS[i] = Math.round(62 + 26 * Math.sin(a * 3) + 14 * Math.sin(a * 7 + 1.3));
 }
 
-const TREE_GAP = 96;
-const TREE_N = 20;
-const TREES = new Int16Array(TREE_N * 3); // x jitter, canopy width, height
-for (let i = 0; i < TREE_N; i++) {
-  TREES[i * 3] = Math.floor(sceneryRand() * 50);
-  TREES[i * 3 + 1] = 18 + Math.floor(sceneryRand() * 14);
-  TREES[i * 3 + 2] = 16 + Math.floor(sceneryRand() * 14);
+// Two big chanukiot stand on the highest far hilltops.
+const HILL_CHANUKIOT = [0, 0];
+{
+  const half = HILL_N / 2;
+  for (let side = 0; side < 2; side++) {
+    let best = side * half + 4;
+    for (let i = side * half + 4; i < (side + 1) * half - 4; i++) if (HILLS[i] > HILLS[best]) best = i;
+    HILL_CHANUKIOT[side] = best;
+  }
+}
+
+// Mid layer: a village of olive trees and flat-roofed houses, each house with
+// a chanukiah in the window. Slots: type (0 tree, 1 house), x jitter, width,
+// height, bunting to the next house (0/1).
+const MID_GAP = 96;
+const MID_N = 20;
+const MID = new Int16Array(MID_N * 5);
+for (let i = 0; i < MID_N; i++) {
+  const house = sceneryRand() < 0.55 ? 1 : 0;
+  const k = i * 5;
+  MID[k] = house;
+  MID[k + 1] = Math.floor(sceneryRand() * (house ? 24 : 50));
+  MID[k + 2] = house ? 36 + Math.floor(sceneryRand() * 14) : 18 + Math.floor(sceneryRand() * 14);
+  MID[k + 3] = house ? 28 + Math.floor(sceneryRand() * 12) : 16 + Math.floor(sceneryRand() * 14);
+}
+for (let i = 0; i < MID_N; i++) {
+  const j = ((i + 1) % MID_N) * 5;
+  MID[i * 5 + 4] = MID[i * 5] && MID[j] && sceneryRand() < 0.7 ? 1 : 0;
 }
 
 function wrap(v, m) {
   return ((v % m) + m) % m;
 }
 
-// camX is the rounded camera position. Draws a little past each edge so
-// screen shake never shows a gap.
-export function drawBackground(ctx, st, camX) {
+// A chanukiah: eight candles in a row and the shamash raised in the middle.
+// x is the centre, y the bottom of the foot, u the size of one pixel-block.
+// Candles fill from the right (night 1 is the far-right candle), the
+// shamash is always lit.
+const CANDLE_ARMS = [8, 6, 4, 2, -2, -4, -6, -8];
+
+function drawFlame(ctx, x, y, u, t, i) {
+  ctx.fillStyle = Math.sin(t * 9 + i * 1.7) > -0.3 ? '#ffd23f' : '#ff9a2a';
+  ctx.fillRect(x, y, u, 2 * u);
+}
+
+export function drawChanukiah(ctx, x, y, u, lit, metal, candle, t) {
+  ctx.fillStyle = metal;
+  ctx.fillRect(x - 2 * u, y - u, 5 * u, u);      // foot
+  ctx.fillRect(x, y - 5 * u, u, 4 * u);          // stem
+  ctx.fillRect(x - 8 * u, y - 5 * u, 17 * u, u); // branch bar
+  ctx.fillRect(x, y - 9 * u, u, 4 * u);          // raised shamash holder
+  ctx.fillStyle = candle;
+  for (let i = 0; i < 8; i++) if (i < lit) ctx.fillRect(x + CANDLE_ARMS[i] * u, y - 7 * u, u, 2 * u);
+  ctx.fillRect(x, y - 10 * u, u, u);
+  for (let i = 0; i < 8; i++) if (i < lit) drawFlame(ctx, x + CANDLE_ARMS[i] * u, y - 9 * u, u, t, i);
+  drawFlame(ctx, x, y - 12 * u, u, t, 9);
+}
+
+function drawHouse(ctx, st, x, base, w, h, t) {
+  const top = base - h;
+  ctx.fillStyle = st.wall;
+  ctx.fillRect(x, top, w, h);
+  ctx.fillStyle = st.wallTop;
+  ctx.fillRect(x - 1, top - 2, w + 2, 3); // flat roof edge
+  ctx.fillStyle = st.door;
+  ctx.fillRect(x + w - 11, base - 12, 7, 12);
+  // window with a chanukiah on the sill
+  const wx = x + 4;
+  const wy = top + 5;
+  ctx.fillStyle = st.windowGlow;
+  ctx.fillRect(wx - 3, wy - 3, 27, 21);
+  ctx.fillStyle = st.window;
+  ctx.fillRect(wx, wy, 21, 15);
+  drawChanukiah(ctx, wx + 10, wy + 14, 1, st.candles, st.metal, st.candle, t);
+}
+
+function drawBunting(ctx, st, x1, x2, y) {
+  const span = x2 - x1;
+  if (span < 12) return;
+  const sag = Math.min(10, span * 0.12);
+  let n = 0;
+  for (let x = x1; x <= x2; x += 2) {
+    const k = (x - x1) / span;
+    const yy = Math.round(y + sag * Math.sin(Math.PI * k));
+    ctx.fillStyle = st.string;
+    ctx.fillRect(x, yy, 2, 1);
+    if ((x - x1) % 8 === 4) {
+      ctx.fillStyle = st.bunting[n++ % 2];
+      ctx.fillRect(x - 2, yy + 1, 5, 1);
+      ctx.fillRect(x - 1, yy + 2, 3, 1);
+      ctx.fillRect(x, yy + 3, 1, 1);
+    }
+  }
+}
+
+// camX is the rounded camera position, t the game clock (for flames).
+// Draws a little past each edge so screen shake never shows a gap.
+export function drawBackground(ctx, st, camX, t) {
   const W = CONFIG.world;
   const vw = CONFIG.view.w;
   const vh = CONFIG.view.h;
@@ -83,31 +176,48 @@ export function drawBackground(ctx, st, camX) {
   // Far hills (slow)
   ctx.fillStyle = st.far;
   const fo = Math.floor(camX * 0.15);
-  const first = Math.floor(fo / HILL_W) - 1;
+  const first = Math.floor(fo / HILL_W) - 4;
   for (let i = first; ; i++) {
     const sx = i * HILL_W - fo;
     if (sx > vw + 8) break;
     const h = HILLS[wrap(i, HILL_N)];
     ctx.fillRect(sx, W.floor - h, HILL_W, h);
   }
+  for (let i = first; ; i++) {
+    const sx = i * HILL_W - fo;
+    if (sx > vw + 60) break;
+    const col = wrap(i, HILL_N);
+    if (col !== HILL_CHANUKIOT[0] && col !== HILL_CHANUKIOT[1]) continue;
+    drawChanukiah(ctx, sx + (HILL_W >> 1), W.floor - HILLS[col], 3, st.candles, st.farMetal, st.candle, t);
+  }
 
-  // Mid layer: a ridge with olive trees (medium)
+  // Mid layer: a ridge with a village of houses and olive trees (medium)
   const mo = Math.floor(camX * 0.45);
+  const ridge = W.floor - 14;
   ctx.fillStyle = st.mid;
-  ctx.fillRect(-8, W.floor - 14, vw + 16, 14);
-  const firstTree = Math.floor((mo - 60) / TREE_GAP);
-  for (let i = firstTree; ; i++) {
-    const k = wrap(i, TREE_N) * 3;
-    const sx = i * TREE_GAP + TREES[k] - mo;
+  ctx.fillRect(-8, ridge, vw + 16, 14);
+  const firstSlot = Math.floor((mo - 60) / MID_GAP);
+  for (let i = firstSlot; ; i++) {
+    const k = wrap(i, MID_N) * 5;
+    const sx = i * MID_GAP + MID[k + 1] - mo;
     if (sx > vw + 40) break;
-    const cw = TREES[k + 1];
-    const th = TREES[k + 2];
-    ctx.fillStyle = st.trunk;
-    ctx.fillRect(sx + (cw >> 1) - 2, W.floor - 14 - th, 4, th);
-    ctx.fillStyle = st.mid;
-    ctx.fillRect(sx, W.floor - 14 - th - 12, cw, 14);
-    ctx.fillStyle = st.midLight;
-    ctx.fillRect(sx + 2, W.floor - 14 - th - 12, cw - 6, 4);
+    const w = MID[k + 2];
+    const h = MID[k + 3];
+    if (MID[k] === 1) {
+      drawHouse(ctx, st, sx, ridge, w, h, t);
+      if (MID[k + 4]) {
+        const n = wrap(i + 1, MID_N) * 5;
+        const nx = (i + 1) * MID_GAP + MID[n + 1] - mo;
+        drawBunting(ctx, st, sx + w, nx, Math.max(ridge - h, ridge - MID[n + 3]) - 1);
+      }
+    } else {
+      ctx.fillStyle = st.trunk;
+      ctx.fillRect(sx + (w >> 1) - 2, ridge - h, 4, h);
+      ctx.fillStyle = st.mid;
+      ctx.fillRect(sx, ridge - h - 12, w, 14);
+      ctx.fillStyle = st.midLight;
+      ctx.fillRect(sx + 2, ridge - h - 12, w - 6, 4);
+    }
   }
 
   // Ground (full speed) with two rows of dashes so speed is easy to feel

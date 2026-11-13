@@ -133,7 +133,7 @@ export function drawGame(ctx, g, alpha) {
   }
 
   ctx.setTransform(1, 0, 0, 1, ox, oy);
-  drawBackground(ctx, g.stage, camX);
+  drawBackground(ctx, g.stage, camX, g.t);
   if (g.scene !== 'title') drawMarkers(ctx, g, camX);
   drawCoins(ctx, g.ents, camX, g.t);
   drawBarriers(ctx, g.ents, camX);
