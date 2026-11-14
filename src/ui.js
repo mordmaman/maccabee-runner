@@ -43,6 +43,23 @@ function drawHeart(ctx, x, y, full) {
   }
 }
 
+// Pause button, top-right of the HUD while playing. main.js hit-tests taps
+// against this (with a little extra room so small fingers can hit it).
+export const PAUSE_BTN = { x: CONFIG.view.w - 42, y: 8, w: 32, h: 32, pad: 10 };
+
+function drawPauseButton(ctx) {
+  const b = PAUSE_BTN;
+  ctx.fillStyle = '#141428';
+  ctx.fillRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
+  ctx.fillStyle = '#ffd23f';
+  ctx.fillRect(b.x, b.y, b.w, b.h);
+  ctx.fillStyle = '#1d2350';
+  ctx.fillRect(b.x + 2, b.y + 2, b.w - 4, b.h - 4);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(b.x + 10, b.y + 9, 4, 14);
+  ctx.fillRect(b.x + 18, b.y + 9, 4, 14);
+}
+
 // Cached HUD strings so drawing makes no new strings when nothing changed.
 const hud = { metres: -1, metresText: '', gelt: -1, geltText: '', best: -1, bestText: '' };
 
@@ -62,10 +79,13 @@ export function drawHUD(ctx, g) {
   const maxHits = (CONFIG.difficulties[CONFIG.difficulty] || CONFIG.difficulties.normal).hits;
   for (let i = 0; i < maxHits; i++) drawHeart(ctx, 14 + i * 22, 56, i < g.player.hits);
 
-  drawLabel(ctx, hud.geltText, CONFIG.view.w - 12, 10, 20, 'right', '#ffd23f');
+  const geltRight = PAUSE_BTN.x - 12;
+  drawLabel(ctx, hud.geltText, geltRight, 10, 20, 'right', '#ffd23f');
   ctx.font = fontFor(20);
   const tw = ctx.measureText(hud.geltText).width;
-  drawCoinAt(ctx, Math.round(CONFIG.view.w - 24 - tw), 21, 8);
+  drawCoinAt(ctx, Math.round(geltRight - 12 - tw), 21, 8);
+
+  if (g.scene === 'play' && !g.paused) drawPauseButton(ctx);
 }
 
 function dim(ctx, a) {
@@ -118,6 +138,7 @@ export function drawPaused(ctx) {
   dim(ctx, 'rgba(10, 12, 30, 0.6)');
   drawLabel(ctx, 'Paused', cx, 130, 32, 'center', '#ffd23f');
   drawLabel(ctx, 'Tap to carry on', cx, 182, 16, 'center', '#ffffff');
+  drawLabel(ctx, 'or press P', cx, 206, 12, 'center', '#c8c0e0');
 }
 
 // Draws one frame. alpha (0..1) blends between the last two updates.

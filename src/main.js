@@ -8,7 +8,7 @@ import { createPlayer, resetPlayer, stepPlayer } from './player.js';
 import { makeRng, createSpawner, resetSpawner, updateSpawner } from './spawner.js';
 import { createEntities, clearEntities, cullEntities, playerHitsBarrier, playerTouchesCoin } from './entities.js';
 import { PLACEHOLDER_STAGE } from './stages.js';
-import { drawGame } from './ui.js';
+import { drawGame, PAUSE_BTN } from './ui.js';
 
 export const STEP = 1 / 60;
 
@@ -193,6 +193,16 @@ function fitCanvas(canvas) {
   canvas.style.height = H * scale + 'px';
 }
 
+// Is this screen point on the pause button? Maps page pixels to the 640x360 view.
+function onPauseButton(canvas, clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  if (!r.width || !r.height) return false;
+  const x = ((clientX - r.left) * CONFIG.view.w) / r.width;
+  const y = ((clientY - r.top) * CONFIG.view.h) / r.height;
+  const b = PAUSE_BTN;
+  return x >= b.x - b.pad && x <= b.x + b.w + b.pad && y >= b.y - b.pad && y <= b.y + b.h + b.pad;
+}
+
 function boot() {
   const canvas = document.getElementById('game');
   canvas.width = CONFIG.view.w;
@@ -217,6 +227,24 @@ function boot() {
     if (document.hidden) pause();
   });
   window.addEventListener('blur', pause);
+
+  // The pause button. Runs before the flight input (capture phase), so a tap
+  // on the button pauses instead of flying. Any tap carries on, as before.
+  window.addEventListener('pointerdown', (e) => {
+    if (g.scene !== 'play' || g.paused) return;
+    if (!onPauseButton(canvas, e.clientX, e.clientY)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    pause();
+  }, { capture: true, passive: false });
+
+  // P or Escape pauses and carries on.
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'KeyP' && e.code !== 'Escape') return;
+    e.preventDefault();
+    if (g.paused) g.paused = false;
+    else pause();
+  });
 
   let last = 0;
   let acc = 0;
